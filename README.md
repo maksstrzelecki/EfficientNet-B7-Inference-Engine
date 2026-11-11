@@ -24,14 +24,43 @@ Softmax is applied across all 1,000 logits before selecting top-k results.
 
 ## Install and start the server
 
-Run these commands from the project directory:
+Install Python and run the commands below from the project directory.
+
+### macOS / Linux
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn server:app --host 127.0.0.1 --port 8000
+python -m pip install -r requirements.txt
+python -m uvicorn server:app --host 127.0.0.1 --port 8000
 ```
+
+### Windows (PowerShell)
+
+Install 64-bit Python with the Python launcher (`py`), then run:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m uvicorn server:app --host 127.0.0.1 --port 8000
+```
+
+If PowerShell blocks activation, use the virtual environment's Python directly
+(activation is optional):
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn server:app --host 127.0.0.1 --port 8000
+```
+
+For Command Prompt (`cmd.exe`), activate the environment with
+`.venv\Scripts\activate.bat`, then use the same `python -m` commands above.
+
+The requirements skip `uvloop` on Windows, where Uvicorn uses Python's built-in
+`asyncio` event loop (see [Uvicorn event loop documentation](https://uvicorn.dev/concepts/event-loop/)).
+
+### Server startup
 
 Startup loads the model once per server process. The device is selected
 automatically: CUDA if available, otherwise Apple MPS if available, otherwise CPU.
