@@ -15,7 +15,7 @@ from PIL import Image
 VARIANTS = [
     ("0. Baseline (FP32)", "inference"),
     ("1. Half-Precision (FP16)", "inference_fp16"),
-    #("2. Dynamic INT8 (Linear)", "inference_dynamic"),
+    ("2. Dynamic (INT8)", "inference_dynamic"),
     #("3. Weight-Only INT8 (All)", "inference_weight_only"),
     #("4. Static FX PTQ (INT8)", "inference_static_fx"),
 ]
