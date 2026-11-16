@@ -1,5 +1,8 @@
+from collections import defaultdict
 import json
 from pathlib import Path
+import random
+from typing import Literal
 
 from datasets import load_dataset
 from torchvision.models import EfficientNet_B7_Weights
@@ -9,6 +12,91 @@ ARCHIVES = {
     "threshold-0.7": "imagenetv2-threshold0.7.tar.gz",
     "top-images": "imagenetv2-top-images.tar.gz",
 }
+
+
+PRESETS: dict[str, tuple[int, int] | None] = {
+    "single": (1, 1),
+    "small": (20, 5),
+    "medium": (200, 5),
+    "full": (None, None),
+}
+
+
+def get_samples(
+    size: Literal["single", "small", "medium", "full", "custom"] = "small",
+    variant: Literal["matched-frequency", "threshold-0.7", "top-images", "mixed"] = "mixed",
+    seed: int = 42,
+    num_classes: int | None = None,
+    samples_per_class: int | None = None,
+    dataset_dir: str | Path = "data/imagenetv2",
+) -> list[dict]:
+    root = Path(dataset_dir)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Not found manifest at {manifest_path}. Please run download_imagenetv2() first."
+        )
+
+    if size == "custom":
+        if not num_classes or not samples_per_class or num_classes < 1 or samples_per_class < 1:
+            raise ValueError(
+                "For size='custom', provide positive values for num_classes and samples_per_class."
+            )
+        target_classes, target_per_class = num_classes, samples_per_class
+    elif size in PRESETS:
+        preset = PRESETS[size]
+        target_classes, target_per_class = preset
+    else:
+        raise ValueError(f"Unknown size: '{size}'.")
+
+    raw_samples = json.loads(manifest_path.read_text(encoding="utf-8"))["samples"]
+
+    filtered = (
+        raw_samples
+        if variant == "mixed"
+        else [i for i in raw_samples if i["split"] == variant]
+    )
+    if not filtered:
+        raise ValueError(f"No samples found for variant '{variant}' in the manifest.")
+
+    rng = random.Random(seed)
+
+   
+    if target_classes is None:
+        selected = list(filtered)
+    else:
+        by_class: dict[int, list[dict]] = defaultdict(list)
+        for sample in filtered:
+            by_class[sample["class_id"]].append(sample)
+
+        available_classes = sorted(by_class.keys())
+        if target_classes > len(available_classes):
+            raise ValueError(
+                f"Requested {target_classes} classes, but only {len(available_classes)} are available."
+            )
+        
+        chosen_classes = rng.sample(available_classes, target_classes)
+        selected = []
+        for class_id in sorted(chosen_classes):
+            pool = sorted(by_class[class_id], key=lambda x: x["file"])
+            if target_per_class > len(pool):
+                raise ValueError(
+                    f"Class {class_id} has {len(pool)} images (requested {target_per_class})."
+                )
+            selected.extend(rng.sample(pool, target_per_class))
+    rng.shuffle(selected)
+
+    return [
+        {
+            "path": root / item["file"],
+            "class_id": item["class_id"],
+            "class_name": item["class_name"],
+            "split": item["split"],
+        }
+        for item in selected
+    ]
+
+
 
 
 def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
