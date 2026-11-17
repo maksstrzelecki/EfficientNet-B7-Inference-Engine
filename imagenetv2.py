@@ -1,3 +1,4 @@
+"""Utilities for downloading and sampling images from the ImageNetV2 dataset."""
 from collections import defaultdict
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Literal
 from datasets import load_dataset
 from torchvision.models import EfficientNet_B7_Weights
 
+# Archive filenames on Hugging Face for each ImageNetV2 variant
 ARCHIVES = {
     "matched-frequency": "imagenetv2-matched-frequency.tar.gz",
     "threshold-0.7": "imagenetv2-threshold0.7.tar.gz",
@@ -14,6 +16,7 @@ ARCHIVES = {
 }
 
 
+# Predefined sampling sizes formatted as (num_classes, samples_per_class)
 PRESETS: dict[str, tuple[int, int] | None] = {
     "single": (1, 1),
     "small": (20, 5),
@@ -30,6 +33,23 @@ def get_samples(
     samples_per_class: int | None = None,
     dataset_dir: str | Path = "data/imagenetv2",
 ) -> list[dict]:
+    """Select and return a shuffled list of image samples from the local ImageNetV2 dataset.
+
+    Reads `manifest.json` from `dataset_dir`, filters images by the chosen dataset variant,
+    and randomly picks classes and images according to a preset or custom counts.
+
+    Args:
+        size: Preset size ('single', 'small', 'medium', 'full') or 'custom'.
+        variant: Dataset split to sample from, or 'mixed' to include all variants.
+        seed: Random seed for reproducible sampling.
+        num_classes: Number of classes to sample (required if size='custom').
+        samples_per_class: Number of images per class (required if size='custom').
+        dataset_dir: Root directory containing the downloaded images and manifest.json.
+
+    Returns:
+        A shuffled list of dicts, each containing 'path', 'class_id', 'class_name', and 'split'.
+    """
+
     root = Path(dataset_dir)
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
@@ -100,6 +120,19 @@ def get_samples(
 
 
 def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
+    """Download all ImageNetV2 variants, save images as JPEGs, and generate manifest.json.
+
+    Fetches the three ImageNetV2 archives from Hugging Face, saves each image to
+    `output_dir/<variant>/<class_id>/<index>.jpg`, maps class IDs to standard ImageNet
+    category names, and writes an index of all files to `manifest.json`.
+
+    Args:
+        output_dir: Directory where the images and manifest.json will be stored.
+
+    Returns:
+        Path to the created manifest.json file.
+    """
+
     out_path = Path(output_dir)
     categories = EfficientNet_B7_Weights.DEFAULT.meta["categories"]
     manifest = []
