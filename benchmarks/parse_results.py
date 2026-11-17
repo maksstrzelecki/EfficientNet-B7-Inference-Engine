@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from statistics import mean, median
 
+import matplotlib.pyplot as plt
+
 # Always use the directory where this script is saved.
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE / "results"
@@ -62,6 +64,69 @@ def calculate_stats(values):
     return round(mean(values), 2), round(median(values), 2), p95
 
 
+
+def create_graphs(graph_data):
+    """Save latency, inference-time, and throughput plots as PNG files."""
+    graphs_dir = REPORTS / "graphs"
+    graphs_dir.mkdir(exist_ok=True)
+    graph_data.sort(key=lambda row: row["concurrency"])
+    generated = []
+
+    # Both timing graphs use mean and P95 calculated by calculate_stats().
+    timing_graphs = [
+        ("client_latency", "Client latency", "latency_vs_concurrency.png"),
+        ("inference_time", "Inference time", "inference_vs_concurrency.png"),
+    ]
+
+    for metric, title, filename in timing_graphs:
+        rows = [row for row in graph_data if row[metric] is not None]
+        if not rows:
+            print(f"Skipped {filename}: no {metric} measurements")
+            continue
+
+        x = [row["concurrency"] for row in rows]
+        averages = [row[metric][0] for row in rows]
+        p95_values = [row[metric][2] for row in rows]
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(x, averages, marker="o", label="Mean")
+        plt.plot(x, p95_values, marker="o", label="P95")
+        plt.title(f"{title} vs. concurrency")
+        plt.xlabel("Concurrency (simultaneous requests)")
+        plt.ylabel("Time (ms)")
+        plt.xticks(x)
+        plt.ylim(bottom=0)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(graphs_dir / filename, dpi=150)
+        plt.close()
+        generated.append((title, filename))
+
+    # Throughput is read from each log's summary (requests per second).
+    rows = [row for row in graph_data if row["throughput"] is not None]
+    if rows:
+        x = [row["concurrency"] for row in rows]
+        y = [row["throughput"] for row in rows]
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(x, y, marker="o")
+        plt.title("Throughput vs. concurrency")
+        plt.xlabel("Concurrency (simultaneous requests)")
+        plt.ylabel("Throughput (requests/second)")
+        plt.xticks(x)
+        plt.ylim(bottom=0)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        filename = "throughput_vs_concurrency.png"
+        plt.savefig(graphs_dir / filename, dpi=150)
+        plt.close()
+        generated.append(("Throughput", filename))
+    else:
+        print("Skipped throughput graph: no throughput values found")
+
+    return generated
+
 def main():
     REPORTS.mkdir(exist_ok=True)
     files = sorted(RESULTS.glob("*.txt"), key=lambda f: concurrency_from_name(f.name))
@@ -71,6 +136,7 @@ def main():
     raw_data = []
     summary = []
     overview = []
+    graph_data = []
 
     for file in files:
         requests, throughput = read_results(file)
@@ -94,6 +160,12 @@ def main():
         latency = current_stats.get("client_latency", ("N/A", "N/A", "N/A"))
         overview.append([concurrency, file.name, len(requests), latency[0], latency[2],
                          throughput if throughput is not None else "N/A"])
+        graph_data.append({
+            "concurrency": concurrency,
+            "client_latency": current_stats.get("client_latency"),
+            "inference_time": current_stats.get("inference_time"),
+            "throughput": throughput,
+        })
         print(f"Read {file.name}: {len(requests)} requests")
 
     if not overview:
@@ -113,12 +185,19 @@ def main():
         writer.writerow(["file", "concurrency", "metric", "count", "mean_ms", "median_ms", "p95_ms"])
         writer.writerows(summary)
 
+    # Generate PNG plots from the same statistics used in the reports.
+    generated_graphs = create_graphs(graph_data)
+
     # Markdown report that VS Code can display as formatted tables.
     lines = ["# Benchmark report", "", "## Concurrency comparison", "",
              "| Concurrency | File | Requests | Mean latency (ms) | P95 latency (ms) | Throughput (req/s) |",
              "| ---: | --- | ---: | ---: | ---: | ---: |"]
     for row in overview:
         lines.append("| " + " | ".join(map(str, row)) + " |")
+
+    lines += ["", "## Graphs", ""]
+    for title, filename in generated_graphs:
+        lines += [f"### {title}", "", f"![{title}](graphs/{filename})", ""]
 
     lines += ["", "## All metrics", "",
               "| File | Concurrency | Metric | N | Mean (ms) | Median (ms) | P95 (ms) |",
@@ -131,6 +210,8 @@ def main():
 
     print(f"\nReports saved in: {REPORTS}")
     print(" - summary.md\n - summary.csv\n - raw_measurements.csv")
+    for _, filename in generated_graphs:
+        print(f" - graphs/{filename}")
 
 
 if __name__ == "__main__":
