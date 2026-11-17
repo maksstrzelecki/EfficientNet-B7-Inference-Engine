@@ -1,4 +1,5 @@
 """Utilities for downloading and sampling images from the ImageNetV2 dataset."""
+import argparse
 from collections import defaultdict
 import json
 from pathlib import Path
@@ -169,4 +170,12 @@ def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
 
 
 if __name__ == "__main__":
-    download_imagenetv2()
+    parser = argparse.ArgumentParser(description="Download the ImageNetV2 dataset.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default="data/imagenetv2",
+        help="Target directory for the downloaded images and manifest.json (default: data/imagenetv2).",
+    )
+    args = parser.parse_args()
+    download_imagenetv2(output_dir=args.path)
