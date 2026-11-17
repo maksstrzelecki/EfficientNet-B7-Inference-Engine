@@ -1,3 +1,12 @@
 .venv
 __pycache__
 *.pth
+baseline_cpu_c1.txt
+baseline_cpu_c5.txt
+gpu_c1_run.txt
+gpu_c2_run.txt
+gpu_c3_run.txt
+gpu_c4_run.txt
+gpu_c5_run.txt
+gpu_c10_run.txt
+test_image.jpg
