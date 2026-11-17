@@ -1,14 +1,65 @@
 from contextlib import asynccontextmanager
-from threading import Semaphore
 import logging
 import time
 import io
-
+import asyncio
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from PIL import Image, UnidentifiedImageError
 
-from inference import get_inference_device, load_model, predict
+from inference import get_inference_device, load_model, predict, predict_batch
 
+MAX_BATCH_SIZE = 1
+BATCH_TIMEOUT = 0.1 
+
+class BatchRequest:
+    def __init__(self, image: Image.Image, top_k: int, timings: dict):
+        self.image = image
+        self.top_k = top_k
+        self.timings = timings
+        self.enqueue_time = time.perf_counter()
+        self.future = asyncio.get_running_loop().create_future()
+
+async def batch_processor(app: FastAPI):
+    while True:
+        batch = []
+        try:
+            new_req = await app.state.batch_queue.get()
+            batch.append(new_req)
+
+            time_limit = time.perf_counter() + BATCH_TIMEOUT
+            while len(batch) < MAX_BATCH_SIZE:
+                time_remaining = time_limit - time.perf_counter()
+                if time_remaining <= 0:
+                    break
+                try:
+                    new_req = await asyncio.wait_for(app.state.batch_queue.get(), timeout=time_remaining)
+                    batch.append(new_req)
+                except asyncio.TimeoutError:
+                    break
+
+
+            loop_ref = asyncio.get_running_loop()
+            try:
+                images_to_predict = [(req.image, req.top_k) for req in batch]
+                batch_results = await loop_ref.run_in_executor(
+                    None, 
+                    predict_batch, 
+                    images_to_predict, 
+                    app.state.loaded
+                )
+                for req, (predictions, batch_timings) in zip(batch, batch_results):
+                    if not req.future.done():
+                        req.timings["queue_time"] = (time.perf_counter() - req.enqueue_time) * 1000
+                        req.timings.update(batch_timings)
+                        req.future.set_result(predictions)
+
+            except Exception as e:
+                for req in batch:
+                    if not req.future.done():
+                        req.future.set_exception(e)
+
+        except asyncio.TimeoutError:
+            pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -17,13 +68,16 @@ async def lifespan(app: FastAPI):
     print(f"Initializing model on {device}")
 
     app.state.loaded = load_model(device=str(device))
-    app.state.semaphore = Semaphore(5)
     print("Model initialized successfully")
+
+    app.state.batch_queue = asyncio.Queue()
+    worker_task = asyncio.create_task(batch_processor(app))
 
     yield
 
+    worker_task.cancel()
+
     del app.state.loaded
-    del app.state.semaphore
 
 
 app = FastAPI(title="EfficientNet-B7 Image Classification", lifespan=lifespan)
@@ -59,7 +113,7 @@ async def measure_request_latency(request, call_next):
 
 
 @app.post("/predict")
-def classify(file: UploadFile = File(), top_k: int = Query(5, ge=1, le=1000)):
+async def classify(file: UploadFile = File(), top_k: int = Query(5, ge=1, le=1000)):
 
     timings = {}
 
@@ -90,25 +144,18 @@ def classify(file: UploadFile = File(), top_k: int = Query(5, ge=1, le=1000)):
         time.perf_counter() - start
     ) * 1000
 
-    # Queue / Lock waiting
-    start = time.perf_counter()
-    with app.state.semaphore:
-        timings["queue_time"] = (
-            time.perf_counter() - start
-        ) * 1000
+    req = BatchRequest(image=rgb, top_k=top_k, timings=timings)
+    await app.state.batch_queue.put(req)
 
-        # Inference pipeline
-        predictions, inference_timings = predict(rgb, app.state.loaded, top_k)
+    try:
+        predictions = await req.future
+    except Exception as e:
+        logger.error(f"Inference failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal inference error")
 
-    timings.update(inference_timings)
-
-    # Logging
     logger.info(
         "PREDICT | %s",
-        " | ".join(
-            f"{key}={value:.2f}ms"
-            for key, value in timings.items()
-        )
+        " | ".join(f"{key}={value:.2f}" + ("ms" if "time" in key else "") for key, value in timings.items())
     )
 
     return {

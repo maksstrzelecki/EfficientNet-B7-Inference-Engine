@@ -13,7 +13,7 @@ async def main(args):
     semaphore = asyncio.Semaphore(args.concurrency)
     limits = httpx.Limits(max_connections=args.concurrency)
 
-    async with httpx.AsyncClient(limits=limits, timeout=60.0) as client:
+    async with httpx.AsyncClient(limits=limits, timeout=90.0) as client:
         async def send_request(index):
             async with semaphore:
                 start = time.perf_counter()

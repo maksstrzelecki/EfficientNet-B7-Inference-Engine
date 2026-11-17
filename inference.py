@@ -112,3 +112,53 @@ def predict(
     ) * 1000
 
     return predictions, timings
+
+
+
+@torch.inference_mode()
+def predict_batch(
+    batch_items: list[tuple[Image.Image, int]],
+    loaded: LoadedModel
+) -> list[tuple[list[dict], dict]]:
+    
+    batch_size = len(batch_items)
+    
+    start = time.perf_counter()
+    tensors = [loaded.preprocess(img) for img, _ in batch_items]
+    batch_tensor = torch.stack(tensors).to(loaded.device)
+    synchronize(loaded.device)
+    prep_time = ((time.perf_counter() - start) * 1000) / batch_size
+
+    start = time.perf_counter()
+    logits = loaded.model(batch_tensor)
+    synchronize(loaded.device)
+    inf_time = ((time.perf_counter() - start) * 1000) / batch_size
+
+    start = time.perf_counter()
+    results = []
+    
+    for i, (_, top_k) in enumerate(batch_items):
+        probabilities = logits[i].softmax(dim=0)
+        scores, indices = probabilities.topk(top_k)
+        
+        predictions = [
+            {
+                "class_id": index,
+                "class_name": loaded.categories[index],
+                "probability": score
+            }
+            for score, index in zip(scores.tolist(), indices.tolist())
+        ]
+        
+        post_time = ((time.perf_counter() - start) * 1000) / batch_size
+        
+        timings = {
+            "preprocessing_time": prep_time,
+            "inference_time": inf_time,
+            "postprocessing_time": post_time,
+            "batch_size_executed": batch_size 
+        }
+        
+        results.append((predictions, timings))
+
+    return results
