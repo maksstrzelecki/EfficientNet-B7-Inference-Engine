@@ -3,17 +3,19 @@ import logging
 import time
 import io
 import asyncio
+
+import torch
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from PIL import Image, UnidentifiedImageError
 
-from inference import get_inference_device, load_model, predict, predict_batch
+from inference import get_inference_device, load_model, predict_batch
 
-MAX_BATCH_SIZE = 1
+MAX_BATCH_SIZE = 2
 BATCH_TIMEOUT = 0.1 
 
 class BatchRequest:
-    def __init__(self, image: Image.Image, top_k: int, timings: dict):
-        self.image = image
+    def __init__(self, image_tensor: torch.Tensor, top_k: int, timings: dict):
+        self.image_tensor = image_tensor
         self.top_k = top_k
         self.timings = timings
         self.enqueue_time = time.perf_counter()
@@ -37,14 +39,14 @@ async def batch_processor(app: FastAPI):
                 except asyncio.TimeoutError:
                     break
 
-
             loop_ref = asyncio.get_running_loop()
             try:
-                images_to_predict = [(req.image, req.top_k) for req in batch]
+                items_to_predict = [(req.image_tensor, req.top_k) for req in batch]
+                
                 batch_results = await loop_ref.run_in_executor(
                     None, 
                     predict_batch, 
-                    images_to_predict, 
+                    items_to_predict, 
                     app.state.loaded
                 )
                 for req, (predictions, batch_timings) in zip(batch, batch_results):
@@ -58,12 +60,14 @@ async def batch_processor(app: FastAPI):
                     if not req.future.done():
                         req.future.set_exception(e)
 
+        except asyncio.CancelledError:
+            break
         except asyncio.TimeoutError:
             pass
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    
     device = get_inference_device()
     print(f"Initializing model on {device}")
 
@@ -76,7 +80,6 @@ async def lifespan(app: FastAPI):
     yield
 
     worker_task.cancel()
-
     del app.state.loaded
 
 
@@ -97,9 +100,7 @@ def health():
 @app.middleware("http")
 async def measure_request_latency(request, call_next):
     start = time.perf_counter()
-
     response = await call_next(request)
-
     server_latency = (time.perf_counter() - start) * 1000
 
     logger.info(
@@ -114,37 +115,39 @@ async def measure_request_latency(request, call_next):
 
 @app.post("/predict")
 async def classify(file: UploadFile = File(), top_k: int = Query(5, ge=1, le=1000)):
-
     timings = {}
 
-    # Upload read
+    # 1. Upload read
     start = time.perf_counter()
-    if file.file.seek(0, 2) > 10 * 1024 * 1024:
+    image_data = await file.read()
+    if len(image_data) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Image exceeds 10 MiB")
-    file.file.seek(0)
-    image_data = file.file.read()
-    timings["upload_read_time"] = (
-        time.perf_counter() - start
-    ) * 1000
+    timings["upload_read_time"] = (time.perf_counter() - start) * 1000
 
-    # Image decoding
+    # 2. Decode and Preprocess (Moved entirely to a worker thread)
     start = time.perf_counter()
+    loop = asyncio.get_running_loop()
+    
+    def decode_and_prep():
+        try:
+            with Image.open(io.BytesIO(image_data)) as image:
+                rgb = image.convert("RGB")
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+            raise ValueError("invalid_image")
+        
+        return app.state.loaded.preprocess(rgb)
+
     try:
-        with Image.open(io.BytesIO(image_data)) as image:
-            rgb = image.convert("RGB")
-    except (
-            UnidentifiedImageError,
-            OSError,
-            ValueError,
-            Image.DecompressionBombError
-        ):
-        raise HTTPException(status_code=400, detail="Invalid or unsupported image")
+        tensor = await loop.run_in_executor(None, decode_and_prep)
+    except ValueError as e:
+        if str(e) == "invalid_image":
+            raise HTTPException(status_code=400, detail="Invalid or unsupported image")
+        raise HTTPException(status_code=500, detail="Failed to preprocess image")
 
-    timings["image_decode_time"] = (
-        time.perf_counter() - start
-    ) * 1000
+    timings["decode_and_prep_time"] = (time.perf_counter() - start) * 1000
 
-    req = BatchRequest(image=rgb, top_k=top_k, timings=timings)
+    # 3. Queue waiting
+    req = BatchRequest(image_tensor=tensor, top_k=top_k, timings=timings)
     await app.state.batch_queue.put(req)
 
     try:
@@ -155,7 +158,7 @@ async def classify(file: UploadFile = File(), top_k: int = Query(5, ge=1, le=100
 
     logger.info(
         "PREDICT | %s",
-        " | ".join(f"{key}={value:.2f}" + ("ms" if "time" in key else "") for key, value in timings.items())
+        " | ".join(f"{key}={value:.2f}ms" for key, value in timings.items())
     )
 
     return {

@@ -117,17 +117,17 @@ def predict(
 
 @torch.inference_mode()
 def predict_batch(
-    batch_items: list[tuple[Image.Image, int]],
+    batch_items: list[tuple[torch.Tensor, int]], 
     loaded: LoadedModel
 ) -> list[tuple[list[dict], dict]]:
     
     batch_size = len(batch_items)
     
     start = time.perf_counter()
-    tensors = [loaded.preprocess(img) for img, _ in batch_items]
+    tensors = [tensor for tensor, _ in batch_items]
     batch_tensor = torch.stack(tensors).to(loaded.device)
     synchronize(loaded.device)
-    prep_time = ((time.perf_counter() - start) * 1000) / batch_size
+    stack_time = ((time.perf_counter() - start) * 1000) / batch_size
 
     start = time.perf_counter()
     logits = loaded.model(batch_tensor)
@@ -135,28 +135,32 @@ def predict_batch(
     inf_time = ((time.perf_counter() - start) * 1000) / batch_size
 
     start = time.perf_counter()
-    results = []
     
-    for i, (_, top_k) in enumerate(batch_items):
-        probabilities = logits[i].softmax(dim=0)
-        scores, indices = probabilities.topk(top_k)
+    max_top_k = max(top_k for _, top_k in batch_items)
+    probabilities = logits.softmax(dim=1)
+    batch_scores, batch_indices = probabilities.topk(max_top_k, dim=1)
+    
+    results = []
+    for i, (_, requested_top_k) in enumerate(batch_items):
+        scores = batch_scores[i][:requested_top_k].tolist()
+        indices = batch_indices[i][:requested_top_k].tolist()
         
         predictions = [
             {
-                "class_id": index,
-                "class_name": loaded.categories[index],
+                "class_id": idx,
+                "class_name": loaded.categories[idx],
                 "probability": score
             }
-            for score, index in zip(scores.tolist(), indices.tolist())
+            for score, idx in zip(scores, indices)
         ]
         
         post_time = ((time.perf_counter() - start) * 1000) / batch_size
         
         timings = {
-            "preprocessing_time": prep_time,
+            "tensor_stack_time": stack_time,
             "inference_time": inf_time,
             "postprocessing_time": post_time,
-            "batch_size_executed": batch_size 
+            "batch_size_executed": batch_size
         }
         
         results.append((predictions, timings))
