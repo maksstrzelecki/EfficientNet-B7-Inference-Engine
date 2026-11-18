@@ -232,5 +232,18 @@ if __name__ == "__main__":
         default="data/imagenetv2",
         help="Target directory for the downloaded images and manifest.json (default: data/imagenetv2).",
     )
+    parser.add_argument(
+        "-v",
+        "--variants",
+        nargs="+",
+        choices=list(ARCHIVES.keys()),
+        default=list(ARCHIVES.keys()),
+        help="Dataset variants to download (default: all).",
+    )
     args = parser.parse_args()
-    download_imagenetv2(output_dir=args.path)
+    download_imagenetv2(
+        output_dir=args.path,
+        matched_frequency="matched-frequency" in args.variants,
+        threshold_07="threshold-0.7" in args.variants,
+        top_images="top-images" in args.variants,
+    )
