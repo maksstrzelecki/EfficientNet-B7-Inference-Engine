@@ -120,7 +120,12 @@ def get_samples(
 
 
 
-def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
+def download_imagenetv2(
+    output_dir: str | Path = "data/imagenetv2",
+    matched_frequency: bool = True,
+    threshold_07: bool = True,
+    top_images: bool = True,
+) -> Path:
     """Download all ImageNetV2 variants, save images as JPEGs, and generate manifest.json.
 
     Fetches the three ImageNetV2 archives from Hugging Face, saves each image to
@@ -133,15 +138,45 @@ def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
     Returns:
         Path to the created manifest.json file.
     """
+    requested_variants_dict = {
+        "matched-frequency": matched_frequency,
+        "threshold-0.7": threshold_07,
+        "top-images": top_images,
+    }
+    requested_variants = [variant for variant, p in requested_variants_dict.items() if p]
 
+    if not requested_variants:
+        raise ValueError("No variants selected. Enable at least one variant to download.")
+    
     out_path = Path(output_dir)
-    categories = EfficientNet_B7_Weights.DEFAULT.meta["categories"]
-    manifest = []
+    manifest_path = out_path / "manifest.json"
 
-    for variant, archive_name in ARCHIVES.items():
+    if manifest_path.exists():
+        manifest_old = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if "variants" not in manifest_old:
+            manifest_old["variants"] = list(ARCHIVES.keys())
+            manifest_path.write_text(
+                json.dumps(manifest_old, indent=2),
+                encoding="utf-8",
+            )
+            print("Updated manifest.json to include 'variants' key.")
+        manifest = manifest_old.get("samples", [])
+        downloaded_variants = set(manifest_old.get("variants"))
+    else:
+        manifest = []
+        downloaded_variants = set()
+
+    variants_to_download = [variant for variant in requested_variants if variant not in downloaded_variants]
+    if not variants_to_download:
+        print("All requested variants already downloaded.")
+        return manifest_path
+    
+    categories = EfficientNet_B7_Weights.DEFAULT.meta["categories"]
+
+    for variant in variants_to_download:
         ds = load_dataset(
             "vaishaal/ImageNetV2",
-            data_files=archive_name,
+            data_files=ARCHIVES[variant],
             split="train",
         )
 
@@ -160,10 +195,19 @@ def download_imagenetv2(output_dir: str | Path = "data/imagenetv2") -> Path:
                 "class_name": categories[class_id],
                 "split": variant,
             })
+            
+        downloaded_variants.add(variant)
     
-    manifest_path = out_path / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
-        json.dumps({"total": len(manifest), "samples": manifest}, indent=2),
+        json.dumps(
+            {
+                "total": len(manifest),
+                "variants": [variant for variant in ARCHIVES if variant in downloaded_variants],
+                "samples": manifest,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return manifest_path
