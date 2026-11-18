@@ -28,7 +28,7 @@ PRESETS: dict[str, tuple[int, int] | None] = {
 
 def get_samples(
     size: Literal["single", "small", "medium", "full", "custom"] = "small",
-    variant: Literal["matched-frequency", "threshold-0.7", "top-images", "mixed"] = "mixed",
+    variant: Literal["matched-frequency", "threshold-0.7", "top-images", "mixed"] = "matched-frequency",
     seed: int = 42,
     num_classes: int | None = None,
     samples_per_class: int | None = None,
@@ -41,7 +41,8 @@ def get_samples(
 
     Args:
         size: Preset size ('single', 'small', 'medium', 'full') or 'custom'.
-        variant: Dataset split to sample from, or 'mixed' to include all variants.
+        variant: Downloaded dataset split to sample from, or 'mixed' to sample across all
+            downloaded variants.
         seed: Random seed for reproducible sampling.
         num_classes: Number of classes to sample (required if size='custom').
         samples_per_class: Number of images per class (required if size='custom').
@@ -49,6 +50,11 @@ def get_samples(
 
     Returns:
         A shuffled list of dicts, each containing 'path', 'class_id', 'class_name', and 'split'.
+
+    Raises:
+        FileNotFoundError: If manifest.json does not exist in `dataset_dir`.
+        ValueError: If `size` is invalid, custom counts are missing, or the requested
+            `variant` has not been downloaded yet.
     """
 
     root = Path(dataset_dir)
@@ -137,17 +143,24 @@ def download_imagenetv2(
     threshold_07: bool = True,
     top_images: bool = True,
 ) -> Path:
-    """Download all ImageNetV2 variants, save images as JPEGs, and generate manifest.json.
+    """Download selected ImageNetV2 variants, save images as JPEGs, and update manifest.json.
 
-    Fetches the three ImageNetV2 archives from Hugging Face, saves each image to
+    Fetches the enabled ImageNetV2 archives from Hugging Face (skipping variants
+    already recorded in `manifest.json`), saves each image to
     `output_dir/<variant>/<class_id>/<index>.jpg`, maps class IDs to standard ImageNet
-    category names, and writes an index of all files to `manifest.json`.
+    category names, and updates `manifest.json` with downloaded variants and file metadata.
 
     Args:
         output_dir: Directory where the images and manifest.json will be stored.
+        matched_frequency: Whether to download the 'matched-frequency' variant.
+        threshold_07: Whether to download the 'threshold-0.7' variant.
+        top_images: Whether to download the 'top-images' variant.
 
     Returns:
-        Path to the created manifest.json file.
+        Path to the created or updated manifest.json file.
+
+    Raises:
+        ValueError: If none of the variant flags are set to True.
     """
     requested_variants_dict = {
         "matched-frequency": matched_frequency,
