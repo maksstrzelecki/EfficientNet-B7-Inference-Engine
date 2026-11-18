@@ -120,49 +120,52 @@ def predict_batch(
     batch_items: list[tuple[torch.Tensor, int]], 
     loaded: LoadedModel
 ) -> list[tuple[list[dict], dict]]:
-    
     batch_size = len(batch_items)
-    
+
     start = time.perf_counter()
     tensors = [tensor for tensor, _ in batch_items]
-    batch_tensor = torch.stack(tensors).to(loaded.device)
+    batch_tensor = torch.stack(tensors)
+    
+    batch_tensor = batch_tensor.to(loaded.device)
+        
     synchronize(loaded.device)
-    stack_time = ((time.perf_counter() - start) * 1000) / batch_size
+    total_stack_time = (time.perf_counter() - start) * 1000
 
     start = time.perf_counter()
     logits = loaded.model(batch_tensor)
     synchronize(loaded.device)
-    inf_time = ((time.perf_counter() - start) * 1000) / batch_size
+    total_inf_time = (time.perf_counter() - start) * 1000
 
     start = time.perf_counter()
-    
     max_top_k = max(top_k for _, top_k in batch_items)
     probabilities = logits.softmax(dim=1)
     batch_scores, batch_indices = probabilities.topk(max_top_k, dim=1)
     
+    batch_scores_cpu = batch_scores.cpu().tolist()
+    batch_indices_cpu = batch_indices.cpu().tolist()
+    total_post_time = (time.perf_counter() - start) * 1000
+
+    shared_timings = {
+        "batch_stack_time_ms": total_stack_time,
+        "batch_inference_time_ms": total_inf_time,
+        "batch_postprocessing_time_ms": total_post_time,
+        "amortized_inference_time_ms": total_inf_time / batch_size,
+        "batch_size_executed": batch_size,
+    }
+
     results = []
     for i, (_, requested_top_k) in enumerate(batch_items):
-        scores = batch_scores[i][:requested_top_k].tolist()
-        indices = batch_indices[i][:requested_top_k].tolist()
-        
+        scores = batch_scores_cpu[i][:requested_top_k]
+        indices = batch_indices_cpu[i][:requested_top_k]
+
         predictions = [
             {
                 "class_id": idx,
                 "class_name": loaded.categories[idx],
-                "probability": score
+                "probability": score,
             }
             for score, idx in zip(scores, indices)
         ]
-        
-        post_time = ((time.perf_counter() - start) * 1000) / batch_size
-        
-        timings = {
-            "tensor_stack_time": stack_time,
-            "inference_time": inf_time,
-            "postprocessing_time": post_time,
-            "batch_size_executed": batch_size
-        }
-        
-        results.append((predictions, timings))
+        results.append((predictions, shared_timings.copy()))
 
     return results
