@@ -70,7 +70,18 @@ def get_samples(
     else:
         raise ValueError(f"Unknown size: '{size}'.")
 
-    raw_samples = json.loads(manifest_path.read_text(encoding="utf-8"))["samples"]
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    downloaded_variants = set(manifest_data.get("variants", ARCHIVES.keys()))
+
+    if variant != "mixed" and variant not in downloaded_variants:
+        if variant not in ARCHIVES:
+            raise ValueError(f"Unknown variant: '{variant}'.")
+        raise ValueError(
+            f"Variant '{variant}' is not downloaded. "
+            f"Available variants: {sorted(downloaded_variants)}."
+        )
+
+    raw_samples = manifest_data["samples"]
 
     filtered = (
         raw_samples
