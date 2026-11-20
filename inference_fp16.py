@@ -1,10 +1,10 @@
 '''
-JEST TO TECHNIKA HALF-PRECISION, KTÓRA POLEGA NA
-ZMIANIE REPREZENTACJI WAG Z 32-BITOWEGO FLOATA NA 16-BITOWEGO.
-ZMNIEJSZA ROZMIAR MODELU O OKOŁO 50%, PRZYSPIESZA INFERENCJE I ZMNIEJSZA ZUZYCIE RAMU.
-TECHNIKA TA JEST PRZEZNACZONA NA CUDA I MPS.
-NA CPU MOZE TO DZIALAC WOLNIEJ NIZ FP32 (ZE WZGLEDU NA POTENCJALNY BRAK WSPARCIA SPRZETOWEGO DLA FP16).
-ALTERNATYWĄ NA CPU MOŻE BYC BFLOAT16 (ALE TEZ MOZE BYC PROBLEM BRAKU WSPARCIA SPRZETOWEGO W ZALEZNOSCI OD TEGO JAKIEGO MAMY PROCKA).
+THIS IS A HALF-PRECISION TECHNIQUE THAT CONSISTS OF
+CHANGING THE WEIGHT REPRESENTATION FROM 32-BIT FLOAT TO 16-BIT FLOAT.
+IT REDUCES THE MODEL SIZE BY ABOUT 50%, SPEEDS UP INFERENCE AND REDUCES RAM USAGE.
+THIS TECHNIQUE IS TARGETED FOR CUDA AND MPS.
+ON CPU IT MIGHT RUN SLOWER THAN FP32 (DUE TO POTENTIAL LACK OF HARDWARE SUPPORT FOR FP16).
+AN ALTERNATIVE ON CPU CAN BE BFLOAT16 (BUT THERE MIGHT ALSO BE A LACK OF HARDWARE SUPPORT DEPENDING ON THE PROCESSOR).
 '''
 
 
@@ -44,9 +44,9 @@ def load_model(device: str = "cpu") -> LoadedModel:
 
     model = efficientnet_b7(weights=weights).to(device=device, dtype=dtype).eval()
 
-    path = Path.cwd() / "efficientnet_b7_v1_16bit.pth"
+    path = Path.cwd() / "efficientnet_b7_fp16.pth"
     torch.save(model.state_dict(), path)
-    print(f"[V1 16-bit] Saved model to: {path} ({path.stat().st_size / (1024**2):.2f} MB)")
+    print(f"[FP16] Saved model to: {path} ({path.stat().st_size / (1024**2):.2f} MB)")
 
     return LoadedModel(
         model,
@@ -69,7 +69,7 @@ def predict(image: Image.Image | str | Path, loaded: LoadedModel, top_k: int = 5
     else:
         rgb = image.convert("RGB")
 
-    # Rzutujemy wejście do 16-bitowego typu modelu
+    # Cast the input to the 16-bit type of the model
     batch = loaded.preprocess(rgb).unsqueeze(0).to(device=loaded.device, dtype=loaded.dtype)
     synchronize(loaded.device)
     timings["preprocessing_time"] = (time.perf_counter() - start) * 1000

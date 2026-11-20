@@ -1,8 +1,8 @@
 '''
-TECHNIKA WEIGHT-ONLY INT8 KOMPRESUJE WAGI DO INT8.
-TAKI MODEL ZAJMUJE OKOLO 4 RAZY MNIEJ PAMIECI.
-PODCZAS INFERENCJI WAGI SA DEKWANTYZOWANE W LOCIE, CO POWODUJE NIEZNACZNE SPADKI PREDKOSCI NA CPU.
-NA CUDA POWINNO BYC SZYBSZE (DEKWANTYZACJA NIE JEST PROBLEMEM A ODCIAZAMY VRAM).
+THE WEIGHT-ONLY INT8 TECHNIQUE COMPRESSES WEIGHTS TO INT8.
+SUCH A MODEL TAKES UP ABOUT 4 TIMES LESS MEMORY.
+DURING INFERENCE, WEIGHTS ARE DEQUANTIZED ON THE FLY, WHICH CAUSES SLIGHT SPEED DROPS ON CPU.
+ON CUDA IT SHOULD BE FASTER (DEQUANTIZATION IS NOT A PROBLEM AND WE FREE UP VRAM).
 '''
 
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ except ImportError:
     HAS_TORCHAO = False
 
 class WeightOnlyInt8Conv2d(nn.Module):
-    """Lekki wrapper przechowujący wagi Conv2d w INT8 i dekwantyzujący w locie."""
+    """Lightweight wrapper that stores Conv2d weights in INT8 and dequantizes them on the fly."""
     def __init__(self, conv: nn.Conv2d):
         super().__init__()
         self.stride = conv.stride
@@ -45,7 +45,7 @@ class WeightOnlyInt8Conv2d(nn.Module):
         return F.conv2d(x, w_fp, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
 class WeightOnlyInt8Linear(nn.Module):
-    """Lekki wrapper przechowujący wagi Linear w INT8."""
+    """Lightweight wrapper that stores Linear weights in INT8."""
     def __init__(self, linear: nn.Linear):
         super().__init__()
         w = linear.weight.detach()
@@ -92,28 +92,60 @@ class LoadedModel:
     device: torch.device
 
 def load_model(device: str = "cpu") -> LoadedModel:
+    target_device = torch.device(device)
     weights = EfficientNet_B7_Weights.DEFAULT
-    model = efficientnet_b7(weights=weights).to(device).eval()
+    model = efficientnet_b7(weights=weights).to(target_device).eval()
 
-    if HAS_TORCHAO and device == "cuda":
+    if HAS_TORCHAO and target_device.type == "cuda":
         def filter_fn(module: torch.nn.Module, fqn: str) -> bool:
             return isinstance(module, (torch.nn.Linear, torch.nn.Conv2d))
         quantize_(model, Int8WeightOnlyConfig(), filter_fn=filter_fn)
     else:
         replace_with_weight_only_int8(model)
 
-    path = Path.cwd() / "efficientnet_b7_weight_only_int8.pth"
+    path = Path.cwd() / "efficientnet_b7_int8.pth"
     torch.save(model.state_dict(), path)
     print(f"[Weight-Only INT8] Saved model to: {path} ({path.stat().st_size / (1024**2):.2f} MB)")
     
-    return LoadedModel(model, weights.transforms(), weights.meta["categories"], torch.device(device))
+    return LoadedModel(
+        model=model, 
+        preprocess=weights.transforms(), 
+        categories=weights.meta["categories"], 
+        device=target_device
+    )
+
+def load_saved_model(model_path: Path) -> LoadedModel:
+    """Loads the model structure and loads the quantized INT8 weights."""
+    target_device = get_inference_device()
+    weights = EfficientNet_B7_Weights.DEFAULT
+    
+    # 1. Create a clean FP32 model
+    model = efficientnet_b7().to(target_device).eval()
+    
+    # 2. Transform the architecture to INT8 equivalents
+    replace_with_weight_only_int8(model)
+    
+    # 3. Load INT8 weights from file
+    model.load_state_dict(torch.load(model_path, map_location=target_device, weights_only=True))
+    
+    return LoadedModel(
+        model=model,
+        preprocess=weights.transforms(),
+        categories=weights.meta["categories"],
+        device=target_device,
+    )
 
 @torch.inference_mode()
-def predict(image: Image.Image | str | Path, loaded: LoadedModel, top_k: int = 5) -> tuple[list[dict], dict]:
+def predict(image: Image.Image | str | Path, loaded: LoadedModel, top_k: int = 5) -> tuple[list[dict], dict[str, float]]:
+    # Model compilation using TorchInductor to fuse dequantization and convolution
     '''
     if not hasattr(loaded.model, "_is_compiled"):
         loaded.model = torch.compile(loaded.model)
         loaded.model._is_compiled = True
+        
+        # Compiler warmup
+        dummy = torch.randn(1, 3, 600, 600, device=loaded.device)
+        loaded.model(dummy)
     '''
     timings = {}
     start = time.perf_counter()
@@ -131,9 +163,11 @@ def predict(image: Image.Image | str | Path, loaded: LoadedModel, top_k: int = 5
     start = time.perf_counter()
     probabilities = logits.softmax(dim=1)[0]
     scores, indices = probabilities.topk(top_k)
+    
     predictions = [
         {"class_id": idx, "class_name": loaded.categories[idx], "probability": score}
         for score, idx in zip(scores.tolist(), indices.tolist())
     ]
     timings["postprocessing_time"] = (time.perf_counter() - start) * 1000
+    
     return predictions, timings
