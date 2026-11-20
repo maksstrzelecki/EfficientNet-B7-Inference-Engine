@@ -1,6 +1,12 @@
 '''
-PRZYKLADOWE URUCHOMIENIE:
-python benchmark_quantization.py --image-path test.jpg --runs 10
+Standard run (default preset "small" - 100 images):
+python benchmark_quantization.py
+
+Run with a ready larger preset (e.g. "medium" - 1000 images):
+python benchmark_quantization.py --test-size medium
+
+Run with a custom dataset size (e.g. 50 classes with 2 images each = 100 images):
+python benchmark_quantization.py --test-size custom --num-classes 50 --samples-per-class 2
 '''
 
 import argparse
@@ -11,90 +17,103 @@ import time
 from pathlib import Path
 from PIL import Image
 
-# Lista modułów do przetestowania
+from imagenetv2 import get_samples, download_imagenetv2
+
 VARIANTS = [
-    ("0. Baseline (FP32)", "inference"),
-    ("1. Half-Precision (FP16)", "inference_fp16"),
-    ("2. Dynamic (INT8)", "inference_dynamic"),
-    #("3. Weight-Only INT8 (All)", "inference_weight_only"),
-    #("4. Static FX PTQ (INT8)", "inference_static_fx"),
+    ("0. Baseline (FP32)", "inference", "efficientnet_b7.pth"),
+    ("1. Half-Precision (FP16)", "inference_fp16", "efficientnet_b7_fp16.pth"),
+    ("2. Half-Precision (FP16-ONNX)", "inference_fp16_onnx", "efficientnet_b7_fp16_ort.pth"),
+    ("3. Weight-Only (INT8)", "inference_int8", "efficientnet_b7_int8.pth"),
+    ("4. Dynamic (INT8)", "inference_dynamic", "efficientnet_b7_dynamic.pth"),
+    ("5. Static ONNX", "inference_static_onnx", "efficientnet_b7_static_ort.pth"),
 ]
 
 
-def find_saved_model_size(before_state: dict[Path, float]) -> tuple[float, Path | None]:
-    """Wykrywa plik .pth utworzony lub zmodyfikowany przez load_model() i zwraca jego rozmiar w MB."""
-    cwd = Path.cwd()
-    modified_files = []
-
-    for pth_file in cwd.glob("*.pth"):
-        mtime = pth_file.stat().st_mtime
-        if pth_file not in before_state or mtime > before_state[pth_file]:
-            modified_files.append((mtime, pth_file))
-
-    if modified_files:
-        # Bierzemy ostatnio zmodyfikowany plik .pth
-        latest_file = max(modified_files, key=lambda x: x[0])[1]
-        return latest_file.stat().st_size / (1024 * 1024), latest_file
-
-    # Fallback: sprawdzenie domyślnego efficientnet_b7.pth
-    default_pth = cwd / "efficientnet_b7.pth"
-    if default_pth.exists():
-        return default_pth.stat().st_size / (1024 * 1024), default_pth
-
-    return 0.0, None
+def get_test_dataset(
+    size: str = "small", 
+    num_classes: int = 20, 
+    samples_per_class: int = 5, 
+    dataset_dir: str = "data/imagenetv2"
+) -> list[dict]:
+    """Downloads the ImageNetV2 test dataset to validate prediction accuracy."""
+    
+    print(f"> Checking and downloading ImageNetV2 variants to '{dataset_dir}'...")
+    download_imagenetv2(
+        output_dir=dataset_dir,
+        matched_frequency=True,
+        threshold_07=True,
+        top_images=True,
+    )
+    
+    print(f"> Loading test samples (preset: {size}, variant: mixed)...")
+    return get_samples(
+        size=size, 
+        variant="mixed", 
+        num_classes=num_classes, 
+        samples_per_class=samples_per_class, 
+        dataset_dir=dataset_dir
+    )
 
 
 def benchmark_module(
     label: str,
     module_name: str,
-    image: Image.Image,
+    expected_filename: str,
+    test_samples: list[dict],
     device: str,
     warmup: int,
-    runs: int,
-    keep_pth: bool,
 ) -> dict | None:
-    print(f"\n>>> Testowanie: {label} (moduł: {module_name}.py)")
+    print(f"\n>>> Testing: {label} (module: {module_name}.py)")
 
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError:
-        print(f"  [POMINIĘTO] Nie znaleziono pliku {module_name}.py w bieżącym katalogu.")
+        print(f"  [SKIPPED] File {module_name}.py not found.")
         return None
 
-    # Zapisujemy stan plików .pth przed wywołaniem load_model()
-    before_pth = {p: p.stat().st_mtime for p in Path.cwd().glob("*.pth")}
-
-    # 1. Wywołanie load_model() z badanego pliku
-    load_start = time.perf_counter()
     target_device = device if device != "auto" else str(module.get_inference_device())
-    loaded = module.load_model(device=target_device)
+    expected_pth = Path.cwd() / expected_filename
+    
+    # 1. Load or generate the model
+    load_start = time.perf_counter()
+    if expected_pth.exists() and hasattr(module, "load_saved_model"):
+        print(f"  [INFO] Found ready file {expected_filename}. Loading from disk...")
+        # We assume the load_saved_model function takes a file path
+        loaded = module.load_saved_model(expected_pth)
+    else:
+        print(f"  [INFO] Generating/calibrating model from scratch (calling load_model)...")
+        loaded = module.load_model(device=target_device)
+    
     load_time_s = time.perf_counter() - load_start
 
-    # 2. Sprawdzenie rozmiaru zapisanego pliku .pth
-    size_mb, saved_pth = find_saved_model_size(before_pth)
+    # 2. Check the final file size (requires the file to exist on disk)
+    if expected_pth.exists():
+        size_mb = expected_pth.stat().st_size / (1024 * 1024)
+    else:
+        print(f"  [WARNING] The module did not save the '{expected_filename}' file. Size = 0 MB.")
+        size_mb = 0.0
 
-    # 3. Rozgrzewka (Warmup) za pomocą funkcji predict() z badanego pliku
+    # 3. Warmup on the first image from the dataset
+    warmup_img = Image.open(test_samples[0]["path"]).convert("RGB")
     for _ in range(warmup):
-        module.predict(image, loaded, top_k=5)
+        module.predict(warmup_img, loaded, top_k=1)
 
-    # 4. Właściwy pomiar czasu przez funkcję predict()
+    # 4. Validation loop over the entire test dataset
     inference_times = []
-    preprocess_times = []
-    postprocess_times = []
-    last_predictions = []
+    correct_predictions = 0
 
-    for _ in range(runs):
-        predictions, timings = module.predict(image, loaded, top_k=5)
+    print(f"  [INFO] Started inference on {len(test_samples)} images...")
+    for sample in test_samples:
+        img = Image.open(sample["path"]).convert("RGB")
+        
+        preds, timings = module.predict(img, loaded, top_k=1)
         inference_times.append(timings["inference_time"])
-        preprocess_times.append(timings.get("preprocessing_time", 0.0))
-        postprocess_times.append(timings.get("postprocessing_time", 0.0))
-        last_predictions = predictions
+        
+        # Accuracy verification (Top-1)
+        if preds and preds[0]["class_id"] == sample["class_id"]:
+            correct_predictions += 1
 
-    top1 = last_predictions[0] if last_predictions else {"class_name": "N/A", "probability": 0.0}
-
-    # Czyszczenie pamięci i ewentualne usunięcie pliku .pth
-    if saved_pth and not keep_pth:
-        saved_pth.unlink(missing_ok=True)
+    accuracy = (correct_predictions / len(test_samples)) * 100
 
     del loaded
     gc.collect()
@@ -106,70 +125,77 @@ def benchmark_module(
         "load_time_s": load_time_s,
         "inf_mean_ms": statistics.mean(inference_times),
         "inf_median_ms": statistics.median(inference_times),
-        "inf_min_ms": min(inference_times),
-        "pre_mean_ms": statistics.mean(preprocess_times),
-        "post_mean_ms": statistics.mean(postprocess_times),
-        "top_class": top1["class_name"],
-        "top_prob": top1["probability"] * 100,
+        "accuracy": accuracy,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Automatyczny benchmark modułów inference_*.py")
-    parser.add_argument("--image-path", type=str, default=None, help="Ścieżka do obrazu testowego")
+    parser = argparse.ArgumentParser(description="Automatic benchmark of inference_*.py modules")
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "mps", "auto"])
-    parser.add_argument("--warmup", type=int, default=2, help="Liczba wywołań rozgrzewkowych")
-    parser.add_argument("--runs", type=int, default=5, help="Liczba wywołań pomiarowych")
-    parser.add_argument("--keep-pth", action="store_true", help="Nie usuwaj wygenerowanych plików .pth po teście")
+    parser.add_argument("--warmup", type=int, default=2, help="Number of warmup calls")
+    
+    parser.add_argument(
+        "--test-size", type=str, default="small", 
+        choices=["single", "small", "medium", "full", "custom"],
+        help="Size of the test dataset (use 'custom' to provide your own values)."
+    )
+    parser.add_argument(
+        "--num-classes", type=int, default=20, 
+        help="Number of classes to download (required only when --test-size custom)"
+    )
+    parser.add_argument(
+        "--samples-per-class", type=int, default=5, 
+        help="Number of images per class (required only when --test-size custom)"
+    )
     args = parser.parse_args()
 
-    if args.image_path and Path(args.image_path).exists():
-        img = Image.open(args.image_path).convert("RGB")
-        print(f"Obraz testowy: {args.image_path} ({img.size[0]}x{img.size[1]})")
-    else:
-        img = Image.new("RGB", (600, 600), color=(120, 160, 200))
-        print("Brak --image-path: wygenerowano syntetyczny obraz RGB (600x600)")
+    # Initialize the test dataset
+    test_samples = get_test_dataset(
+        size=args.test_size,
+        num_classes=args.num_classes,
+        samples_per_class=args.samples_per_class
+    )
+    if not test_samples:
+        print("Error: The test dataset is empty.")
+        return
 
     results = []
-    for label, mod_name in VARIANTS:
+    for label, mod_name, expected_filename in VARIANTS:
         res = benchmark_module(
             label=label,
             module_name=mod_name,
-            image=img,
+            expected_filename=expected_filename,
+            test_samples=test_samples,
             device=args.device,
             warmup=args.warmup,
-            runs=args.runs,
-            keep_pth=args.keep_pth,
         )
         if res is not None:
             results.append(res)
 
     if not results:
-        print("Brak wyników do wyświetlenia.")
+        print("No results to display.")
         return
 
-    # Punkt odniesienia
+    # Reference point for calculating compression and speedup
     base_size = results[0]["size_mb"] or 1.0
     base_inf = results[0]["inf_mean_ms"] or 1.0
 
-    print("\n" + "=" * 118)
+    print("\n" + "=" * 105)
     print(
-        f"{'Wariant (Moduł)':<28} | {'Rozmiar .pth':<13} | {'Kompresja':<9} | "
-        f"{'Inference (śr)':<15} | {'Mediana':<12} | {'Speedup':<8} | {'Top-1 Predykcja'}"
+        f"{'Variant (Module)':<29} | {'Size':<10} | {'Compression':<11} | "
+        f"{'Inference (avg)':<15} | {'Speedup':<8} | {'Top-1 Acc'}"
     )
-    print("-" * 118)
+    print("-" * 105)
 
     for r in results:
         comp = base_size / r["size_mb"] if r["size_mb"] > 0 else 0.0
         speedup = base_inf / r["inf_mean_ms"] if r["inf_mean_ms"] > 0 else 0.0
-        pred_str = f"{r['top_class'][:16]} ({r['top_prob']:.1f}%)"
 
         print(
-            f"{r['label']:<28} | {r['size_mb']:>10.2f} MB | {comp:>8.2f}x | "
-            f"{r['inf_mean_ms']:>12.2f} ms | {r['inf_median_ms']:>9.2f} ms | "
-            f"{speedup:>7.2f}x | {pred_str}"
+            f"{r['label']:<29} | {r['size_mb']:>7.2f} MB | {comp:>10.2f}x | "
+            f"{r['inf_mean_ms']:>12.2f} ms | {speedup:>7.2f}x | {r['accuracy']:>6.1f}%"
         )
-    print("=" * 118)
+    print("=" * 105)
 
 
 if __name__ == "__main__":
