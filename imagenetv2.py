@@ -1,0 +1,262 @@
+"""Utilities for downloading and sampling images from the ImageNetV2 dataset."""
+import argparse
+from collections import defaultdict
+import json
+from pathlib import Path
+import random
+from typing import Literal
+
+from datasets import load_dataset
+from torchvision.models import EfficientNet_B7_Weights
+
+# Archive filenames on Hugging Face for each ImageNetV2 variant
+ARCHIVES = {
+    "matched-frequency": "imagenetv2-matched-frequency.tar.gz",
+    "threshold-0.7": "imagenetv2-threshold0.7.tar.gz",
+    "top-images": "imagenetv2-top-images.tar.gz",
+}
+
+
+# Predefined sampling sizes formatted as (num_classes, samples_per_class)
+PRESETS: dict[str, tuple[int, int] | None] = {
+    "single": (1, 1),
+    "small": (20, 5),
+    "medium": (200, 5),
+    "full": (None, None),
+}
+
+
+def get_samples(
+    size: Literal["single", "small", "medium", "full", "custom"] = "small",
+    variant: Literal["matched-frequency", "threshold-0.7", "top-images", "mixed"] = "matched-frequency",
+    seed: int = 42,
+    num_classes: int | None = None,
+    samples_per_class: int | None = None,
+    dataset_dir: str | Path = "data/imagenetv2",
+) -> list[dict]:
+    """Select and return a shuffled list of image samples from the local ImageNetV2 dataset.
+
+    Reads `manifest.json` from `dataset_dir`, filters images by the chosen dataset variant,
+    and randomly picks classes and images according to a preset or custom counts.
+
+    Args:
+        size: Preset size ('single', 'small', 'medium', 'full') or 'custom'.
+        variant: Downloaded dataset split to sample from, or 'mixed' to sample across all
+            downloaded variants.
+        seed: Random seed for reproducible sampling.
+        num_classes: Number of classes to sample (required if size='custom').
+        samples_per_class: Number of images per class (required if size='custom').
+        dataset_dir: Root directory containing the downloaded images and manifest.json.
+
+    Returns:
+        A shuffled list of dicts, each containing 'path', 'class_id', 'class_name', and 'split'.
+
+    Raises:
+        FileNotFoundError: If manifest.json does not exist in `dataset_dir`.
+        ValueError: If `size` is invalid, custom counts are missing, or the requested
+            `variant` has not been downloaded yet.
+    """
+
+    root = Path(dataset_dir)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Not found manifest at {manifest_path}. Please run download_imagenetv2() first."
+        )
+
+    if size == "custom":
+        if not num_classes or not samples_per_class or num_classes < 1 or samples_per_class < 1:
+            raise ValueError(
+                "For size='custom', provide positive values for num_classes and samples_per_class."
+            )
+        target_classes, target_per_class = num_classes, samples_per_class
+    elif size in PRESETS:
+        preset = PRESETS[size]
+        target_classes, target_per_class = preset
+    else:
+        raise ValueError(f"Unknown size: '{size}'.")
+
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    downloaded_variants = set(manifest_data.get("variants", ARCHIVES.keys()))
+
+    if variant != "mixed" and variant not in downloaded_variants:
+        if variant not in ARCHIVES:
+            raise ValueError(f"Unknown variant: '{variant}'.")
+        raise ValueError(
+            f"Variant '{variant}' is not downloaded. "
+            f"Available variants: {sorted(downloaded_variants)}."
+        )
+
+    raw_samples = manifest_data["samples"]
+
+    filtered = (
+        raw_samples
+        if variant == "mixed"
+        else [i for i in raw_samples if i["split"] == variant]
+    )
+    if not filtered:
+        raise ValueError(f"No samples found for variant '{variant}' in the manifest.")
+
+    rng = random.Random(seed)
+
+   
+    if target_classes is None:
+        selected = list(filtered)
+    else:
+        by_class: dict[int, list[dict]] = defaultdict(list)
+        for sample in filtered:
+            by_class[sample["class_id"]].append(sample)
+
+        available_classes = sorted(by_class.keys())
+        if target_classes > len(available_classes):
+            raise ValueError(
+                f"Requested {target_classes} classes, but only {len(available_classes)} are available."
+            )
+        
+        chosen_classes = rng.sample(available_classes, target_classes)
+        selected = []
+        for class_id in sorted(chosen_classes):
+            pool = sorted(by_class[class_id], key=lambda x: x["file"])
+            if target_per_class > len(pool):
+                raise ValueError(
+                    f"Class {class_id} has {len(pool)} images (requested {target_per_class})."
+                )
+            selected.extend(rng.sample(pool, target_per_class))
+    rng.shuffle(selected)
+
+    return [
+        {
+            "path": root / item["file"],
+            "class_id": item["class_id"],
+            "class_name": item["class_name"],
+            "split": item["split"],
+        }
+        for item in selected
+    ]
+
+
+
+
+def download_imagenetv2(
+    output_dir: str | Path = "data/imagenetv2",
+    matched_frequency: bool = True,
+    threshold_07: bool = True,
+    top_images: bool = True,
+) -> Path:
+    """Download selected ImageNetV2 variants, save images as JPEGs, and update manifest.json.
+
+    Fetches the enabled ImageNetV2 archives from Hugging Face (skipping variants
+    already recorded in `manifest.json`), saves each image to
+    `output_dir/<variant>/<class_id>/<index>.jpg`, maps class IDs to standard ImageNet
+    category names, and updates `manifest.json` with downloaded variants and file metadata.
+
+    Args:
+        output_dir: Directory where the images and manifest.json will be stored.
+        matched_frequency: Whether to download the 'matched-frequency' variant.
+        threshold_07: Whether to download the 'threshold-0.7' variant.
+        top_images: Whether to download the 'top-images' variant.
+
+    Returns:
+        Path to the created or updated manifest.json file.
+
+    Raises:
+        ValueError: If none of the variant flags are set to True.
+    """
+    requested_variants_dict = {
+        "matched-frequency": matched_frequency,
+        "threshold-0.7": threshold_07,
+        "top-images": top_images,
+    }
+    requested_variants = [variant for variant, p in requested_variants_dict.items() if p]
+
+    if not requested_variants:
+        raise ValueError("No variants selected. Enable at least one variant to download.")
+    
+    out_path = Path(output_dir)
+    manifest_path = out_path / "manifest.json"
+
+    if manifest_path.exists():
+        manifest_old = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if "variants" not in manifest_old:
+            manifest_old["variants"] = list(ARCHIVES.keys())
+            manifest_path.write_text(
+                json.dumps(manifest_old, indent=2),
+                encoding="utf-8",
+            )
+            print("Updated manifest.json to include 'variants' key.")
+        manifest = manifest_old.get("samples", [])
+        downloaded_variants = set(manifest_old.get("variants"))
+    else:
+        manifest = []
+        downloaded_variants = set()
+
+    variants_to_download = [variant for variant in requested_variants if variant not in downloaded_variants]
+    if not variants_to_download:
+        print("All requested variants already downloaded.")
+        return manifest_path
+    
+    categories = EfficientNet_B7_Weights.DEFAULT.meta["categories"]
+
+    for variant in variants_to_download:
+        ds = load_dataset(
+            "vaishaal/ImageNetV2",
+            data_files=ARCHIVES[variant],
+            split="train",
+        )
+
+        for idx, row in enumerate(ds):
+            class_id = int(row["__key__"].split("/")[-2])
+
+            rel_path = Path(variant) / f"{class_id:03d}" / f"{idx:04d}.jpg"
+            file_path = out_path / rel_path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            row["jpeg"].convert("RGB").save(file_path, format="JPEG", quality=95)
+
+            manifest.append({
+                "file": rel_path.as_posix(),
+                "class_id": class_id,
+                "class_name": categories[class_id],
+                "split": variant,
+            })
+            
+        downloaded_variants.add(variant)
+    
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "total": len(manifest),
+                "variants": [variant for variant in ARCHIVES if variant in downloaded_variants],
+                "samples": manifest,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Download the ImageNetV2 dataset.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default="data/imagenetv2",
+        help="Target directory for the downloaded images and manifest.json (default: data/imagenetv2).",
+    )
+    parser.add_argument(
+        "-v",
+        "--variants",
+        nargs="+",
+        choices=list(ARCHIVES.keys()),
+        default=list(ARCHIVES.keys()),
+        help="Dataset variants to download (default: all).",
+    )
+    args = parser.parse_args()
+    download_imagenetv2(
+        output_dir=args.path,
+        matched_frequency="matched-frequency" in args.variants,
+        threshold_07="threshold-0.7" in args.variants,
+        top_images="top-images" in args.variants,
+    )
