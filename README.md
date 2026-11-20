@@ -190,6 +190,55 @@ request failures raise an exception and stop the benchmark.
 
 Show available arguments with `python client.py --help`.
 
+
+## Quantization Benchmarks
+
+The project includes an evaluation suite (`benchmark_quantization.py`) to measure the performance impact, file size reduction, and accuracy preservation of various model quantization techniques. You can run the benchmark targeting different backends using the `--device` flag.
+
+Below are the benchmark results collected across different hardware architectures.
+
+Benchmarks were run on 1000 different classes with 10 samples per class. Images come from ImageNetV2.
+
+### CPU (x86 / x64)
+
+Run with: `python benchmark_quantization.py --device cpu --test-size custom --num-classes 200 --samples-per-class 5`
+
+| Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc | 
+| ----- | ----- | ----- | ----- | ----- | ----- | 
+| 0\. Baseline (FP32) | 254.69 MB | 1.00x | 790.14 ms | 1.00x | 82.3% | 
+| 1\. Half-Precision (FP16) | 127.55 MB | 2.00x | 581.44 ms | 1.36x | 82.5% | 
+| 2\. Half-Precision (FP16-ONNX) | 126.57 MB | 2.01x | 452.00 ms | 1.75x | 82.4% | 
+| 3\. Weight-Only (INT8) | 66.50 MB | 3.83x | 833.76 ms | 0.95x | 82.3% | 
+| 4\. Dynamic (INT8) | 247.38 MB | 1.03x | 784.52 ms | 1.01x | 82.4% | 
+| 5\. Static ONNX | 64.54 MB | 3.95x | 664.07 ms | 1.19x | 78.5% | 
+
+### CUDA (NVIDIA GPU)
+
+Run with: `python benchmark_quantization.py --device cuda --test-size custom --num-classes 200 --samples-per-class 5`
+
+| Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc | 
+| ----- | ----- | ----- | ----- | ----- | ----- | 
+| 0\. Baseline (FP32) |  |  |  |  |  | 
+| 1\. Half-Precision (FP16) |  |  |  |  |  | 
+| 2\. Half-Precision (FP16-ONNX) |  |  |  |  |  | 
+| 3\. Weight-Only (INT8) |  |  |  |  |  | 
+| 4\. Dynamic (INT8) |  |  |  |  |  | 
+| 5\. Static ONNX |  |  |  |  |  | 
+
+### MPS (Apple Silicon)
+
+Run with: `python benchmark_quantization.py --device mps --test-size custom --num-classes 200 --samples-per-class 5`
+
+| Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc | 
+| ----- | ----- | ----- | ----- | ----- | ----- | 
+| 0\. Baseline (FP32) |  |  |  |  |  | 
+| 1\. Half-Precision (FP16) |  |  |  |  |  | 
+| 2\. Half-Precision (FP16-ONNX) |  |  |  |  |  | 
+| 3\. Weight-Only (INT8) |  |  |  |  |  | 
+| 4\. Dynamic (INT8) |  |  |  |  |  | 
+| 5\. Static ONNX |  |  |  |  |  | 
+
+
 ## Python usage
 
 ```python
