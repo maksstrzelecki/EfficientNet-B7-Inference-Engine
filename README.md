@@ -229,14 +229,14 @@ Run with: `python benchmark_quantization.py --device cuda --test-size custom --n
 
 Run with: `python benchmark_quantization.py --device mps --test-size custom --num-classes 200 --samples-per-class 5`
 
-| Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc | 
-| ----- | ----- | ----- | ----- | ----- | ----- | 
-| 0\. Baseline (FP32) |  |  |  |  |  | 
-| 1\. Half-Precision (FP16) |  |  |  |  |  | 
-| 2\. Half-Precision (FP16-ONNX) |  |  |  |  |  | 
-| 3\. Weight-Only (INT8) |  |  |  |  |  | 
-| 4\. Dynamic (INT8) |  |  |  |  |  | 
-| 5\. Static ONNX |  |  |  |  |  | 
+| Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc |
+| ----- | ----- | ----- | ----- | ----- | ----- |
+| 0. Baseline (FP32) | 254.69 MB | 1.00x | 244.10 ms | 1.00x | 82.3% |
+| 1. Half-Precision (FP16) | 127.55 MB | 2.00x | 190.40 ms | 1.28x | 82.2% |
+| 2. Half-Precision (FP16-ONNX) | 126.57 MB | 2.01x | 422.51 ms | 0.58x | 82.4% |
+| 3. Weight-Only (INT8) | 66.50 MB | 3.83x | 267.43 ms | 0.91x | 82.3% |
+| 4. Dynamic (INT8) | 247.38 MB | 1.03x | 244.42 ms | 1.00x | 82.4% |
+| 5. Static ONNX | 64.54 MB | 3.95x | 7748.34 ms | 0.03x | 78.4% |
 
 
 ## Python usage
