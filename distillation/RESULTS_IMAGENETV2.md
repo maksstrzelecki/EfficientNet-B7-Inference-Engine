@@ -48,6 +48,16 @@ Ten eksperyment weryfikuje destylację wiedzy (**Knowledge Distillation**) z pre
 
 ---
 
+## Wnioski
+
+1. **Wyraźna skuteczność Knowledge Distillation:** Przy identycznej architekturze (`EfficientNet-B0`, 21.5 MB — ok. 12× mniejszej niż `EfficientNet-B7`), tym samym zbiorze i tej samej liczbie epok destylacja z Nauczyciela `B7` podniosła wynik o **+8.39 pp Top-1** (**+41.4% względnej poprawy**) oraz **+9.35 pp Top-5** (niemal 50% trafień w pierwszej piątce z 1000 klas). Uczeń przebił końcowy wynik 25-epokowego Baseline’u już w **16. epoce**.
+2. **Wpływ rozmiaru zbioru (30 zdjęć/klasę — reżim *low-data*):**
+   * Jako **eksperyment badawczy (PoC)** ImageNetV2 sprawdza się bardzo dobrze: przy zaledwie 24 zdjęciach treningowych na klasę bogate „miękkie” rozkłady prawdopodobieństw (*soft targets*) z Nauczyciela `B7` dostarczają znacznie więcej informacji niż same etykiety, a pełny eksperyment kończy się w ~1,5 h na jednym GPU.
+   * Jako **model produkcyjny na 1000 klas** ~29% Top-1 (wobec ~82% Nauczyciela) pokazuje naturalne ograniczenie małej liczby danych — pełny ImageNet-1K zawiera ~1300 zdjęć na klasę (ponad 50× więcej).
+3. **Uzupełnienie wariantu 100-klasowego:** Ten eksperyment (1000 klas × 30 zdjęć) demonstruje siłę samej destylacji w warunkach niedoboru danych, stanowiąc dobre uzupełnienie dla równoległego wariantu zespołu (100 klas na pełnym zbiorze zdjęć), który pozwala osiągnąć wyższą bezwzględną celność kosztem mniejszej liczby kategorii.
+
+---
+
 ## Odtworzenie eksperymentu
 
 ```powershell
