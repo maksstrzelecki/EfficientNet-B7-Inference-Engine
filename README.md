@@ -218,12 +218,12 @@ Run with: `python benchmark_quantization.py --device cuda --test-size custom --n
 
 | Variant (Module) | Size | Compression | Inference (avg) | Speedup | Top-1 Acc | 
 | ----- | ----- | ----- | ----- | ----- | ----- | 
-| 0\. Baseline (FP32) |  |  |  |  |  | 
-| 1\. Half-Precision (FP16) |  |  |  |  |  | 
-| 2\. Half-Precision (FP16-ONNX) |  |  |  |  |  | 
-| 3\. Weight-Only (INT8) |  |  |  |  |  | 
-| 4\. Dynamic (INT8) |  |  |  |  |  | 
-| 5\. Static ONNX |  |  |  |  |  | 
+| 0\. Baseline (FP32) | 254.71 MB | 1.00x | 43.87 ms | 1.00x | 82.3% | 
+| 1\. Half-Precision (FP16) | 127.57 MB | 2.00x | 46.64 ms | 0.94x | 82.2% | 
+| 2\. Half-Precision (FP16-ONNX) | - | - | - | - | - | 
+| 3\. Weight-Only (INT8) | 66.52 MB | 3.83x | 60.78 ms | 0.72x | 82.3% | 
+| 4\. Dynamic (INT8) | 247.40 MB | 1.03x | 45.03 ms | 0.97x | 82.4% | 
+| 5\. Static ONNX | - | - | - | - | - | 
 
 ### MPS (Apple Silicon)
 
